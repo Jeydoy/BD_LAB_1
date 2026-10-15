@@ -1,0 +1,142 @@
+Створення таблиць зі зв'язками 
+
+// --- 1. Користувачі та філії ---
+Table Roles {
+  Id int [pk, increment]
+  Name varchar [not null]
+}
+
+Table Users {
+  Id int [pk, increment]
+  RoleId int [ref: > Roles.Id, not null]
+  FirstName varchar [not null]
+  LastName varchar [not null]
+  Email varchar
+  UpdatedAt datetime
+  UpdatedBy int [ref: > Users.Id, not null] 
+  IsDeleted boolean [not null]
+}
+
+Table Locations {
+  Id int [pk, increment]
+  Name varchar [not null]
+  Address varchar [not null]
+}
+
+
+// --- 2. Транспорт (Автопарк) ---
+Table VehicleCategories {
+  Id int [pk, increment]
+  Name varchar [not null]
+  BaseDailyRate decimal [not null]
+}
+
+Table VehicleModels {
+  Id int [pk, increment]
+  CategoryId int [ref: > VehicleCategories.Id, not null]
+  Brand varchar [not null]
+  Model varchar [not null]
+  Year int [not null]
+  Transmission varchar [not null]
+}
+
+Table Vehicles {
+  Id int [pk, increment]
+  ModelId int [ref: > VehicleModels.Id, not null]
+  LocationId int [ref: > Locations.Id, not null]
+  VIN varchar [not null]
+  LicensePlate varchar [not null]
+  Mileage int [not null]
+  Status varchar [not null]
+  UpdatedAt datetime
+  UpdatedBy int [ref: > Users.Id, not null]
+  IsDeleted boolean [not null]
+}
+
+
+// --- 3. Клієнти ---
+Table Clients {
+  Id int [pk, increment]
+  FirstName varchar [not null]
+  LastName varchar [not null]
+  Phone varchar [not null]
+  Email varchar
+  Rating int
+  UpdatedAt datetime
+  UpdatedBy int [ref: > Users.Id, not null]
+  IsDeleted boolean [not null]
+}
+
+Table ClientDocuments {
+  Id int [pk, increment]
+  ClientId int [ref: > Clients.Id, not null]
+  PassportNumber varchar [not null]
+  LicenseNumber varchar [not null]
+  LicenseExpiryDate date [not null]
+}
+
+
+// --- 4. Оренда ---
+Table RentalStatuses {
+  Id int [pk, increment]
+  Name varchar [not null] 
+}
+
+Table Rentals {
+  Id int [pk, increment]
+  ClientId int [ref: > Clients.Id, not null]
+  VehicleId int [ref: > Vehicles.Id, not null]
+  PickUpLocationId int [ref: > Locations.Id, not null]
+  DropOffLocationId int [ref: > Locations.Id, not null]
+  ProcessedByUserId int [ref: > Users.Id, not null]
+  StatusId int [ref: > RentalStatuses.Id, not null]
+  StartDate datetime [not null]
+  EndDate datetime [not null]
+  ActualEndDate datetime
+  UpdatedAt datetime
+  UpdatedBy int [ref: > Users.Id, not null]
+  IsDeleted boolean [not null]
+}
+
+Table Payments {
+  Id int [pk, increment]
+  RentalId int [ref: > Rentals.Id, not null]
+  Amount decimal [not null]
+  PaymentDate datetime [not null]
+  PaymentMethod varchar [not null] 
+}
+
+Table AdditionalOptions {
+  Id int [pk, increment]
+  Name varchar [not null] 
+  PricePerDay decimal [not null]
+}
+
+Table RentalOptions {
+  RentalId int [ref: > Rentals.Id, not null]
+  OptionId int [ref: > AdditionalOptions.Id, not null]
+  indexes {
+    (RentalId, OptionId) [pk]
+  }
+}
+
+
+// --- 5. Стан авто та обслуговування ---
+Table DamageReports {
+  Id int [pk, increment]
+  RentalId int [ref: > Rentals.Id] 
+  VehicleId int [ref: > Vehicles.Id, not null]
+  ReportedByUserId int [ref: > Users.Id, not null]
+  Description text [not null]
+  DamageDate datetime [not null]
+  UpdatedAt datetime
+  UpdatedBy int [ref: > Users.Id, not null]
+}
+
+Table MaintenanceRecords {
+  Id int [pk, increment]
+  VehicleId int [ref: > Vehicles.Id, not null]
+  ServiceType varchar [not null]
+  Cost decimal [not null]
+  ServiceDate datetime [not null]
+}

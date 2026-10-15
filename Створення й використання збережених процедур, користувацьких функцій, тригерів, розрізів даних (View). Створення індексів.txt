@@ -1,0 +1,261 @@
+Створення й використання збережених процедур, користувацьких функцій, тригерів, розрізів даних (View). Створення індексів
+
+1)View
+
+-- 1. Активні автомобілі
+CREATE VIEW vw_ActiveVehicles AS
+SELECT Id, ModelId, LocationId, VIN, LicensePlate, Mileage, Status
+FROM Vehicles
+WHERE IsDeleted = 0;
+GO
+
+-- 2. Активні клієнти
+CREATE VIEW vw_ActiveClients AS
+SELECT Id, FirstName, LastName, Phone, Email, Rating
+FROM Clients
+WHERE IsDeleted = 0;
+GO
+
+-- 3. Актуальні договори оренди (без скасованих і видалених)
+CREATE VIEW vw_ActiveRentals AS
+SELECT Id, ClientId, VehicleId, StartDate, EndDate, StatusId
+FROM Rentals
+WHERE IsDeleted = 0 AND StatusId != (SELECT Id FROM RentalStatuses WHERE Name = 'Cancelled');
+GO
+
+-- 4. Повна інформація по договорах оренди (для Dashboard / Grid)
+CREATE VIEW vw_RentalFullDetails AS
+SELECT 
+    r.Id AS RentalId,
+    c.FirstName + ' ' + c.LastName AS ClientFullName,
+    vm.Brand + ' ' + vm.Model AS VehicleName,
+    v.LicensePlate,
+    s.Name AS RentalStatus,
+    locPick.Name AS PickUpLocation,
+    locDrop.Name AS DropOffLocation,
+    r.StartDate,
+    r.EndDate
+FROM Rentals r
+JOIN Clients c ON r.ClientId = c.Id
+JOIN Vehicles v ON r.VehicleId = v.Id
+JOIN VehicleModels vm ON v.ModelId = vm.Id
+JOIN RentalStatuses s ON r.StatusId = s.Id
+JOIN Locations locPick ON r.PickUpLocationId = locPick.Id
+JOIN Locations locDrop ON r.DropOffLocationId = locDrop.Id
+WHERE r.IsDeleted = 0;
+GO
+
+-- 5. Зведена статистика по статусах автомобілів
+CREATE VIEW vw_FleetStatusSummary AS
+SELECT 
+    Status, 
+    COUNT(Id) AS TotalVehicles
+FROM Vehicles
+WHERE IsDeleted = 0
+GROUP BY Status;
+GO
+
+2) Stored Procedures
+
+-- 6. М'яке видалення автомобіля
+CREATE PROCEDURE sp_SoftDeleteVehicle
+    @VehicleId INT,
+    @DeletedByUserId INT
+AS
+BEGIN
+    UPDATE Vehicles
+    SET IsDeleted = 1,
+        UpdatedAt = GETDATE(),
+        UpdatedBy = @DeletedByUserId
+    WHERE Id = @VehicleId;
+END;
+GO
+
+-- 7. М'яке видалення клієнта
+CREATE PROCEDURE sp_SoftDeleteClient
+    @ClientId INT,
+    @DeletedByUserId INT
+AS
+BEGIN
+    UPDATE Clients
+    SET IsDeleted = 1,
+        UpdatedAt = GETDATE(),
+        UpdatedBy = @DeletedByUserId
+    WHERE Id = @ClientId;
+END;
+GO
+
+-- 8. Завершення оренди 
+CREATE PROCEDURE sp_CompleteRental
+    @RentalId INT,
+    @ActualEndDate DATETIME2,
+    @NewMileage INT,
+    @UpdatedByUserId INT
+AS
+BEGIN
+    UPDATE Rentals
+    SET ActualEndDate = @ActualEndDate,
+        StatusId = (SELECT Id FROM RentalStatuses WHERE Name = 'Completed'),
+        UpdatedAt = GETDATE(),
+        UpdatedBy = @UpdatedByUserId
+    WHERE Id = @RentalId;
+
+    DECLARE @VehicleId INT = (SELECT VehicleId FROM Rentals WHERE Id = @RentalId);
+    
+    UPDATE Vehicles
+    SET Mileage = @NewMileage,
+        Status = 'Available',
+        UpdatedAt = GETDATE(),
+        UpdatedBy = @UpdatedByUserId
+    WHERE Id = @VehicleId;
+END;
+GO
+
+-- 9. Створення нового договору оренди з перевіркою статусу авто
+CREATE PROCEDURE sp_CreateRental
+    @ClientId INT,
+    @VehicleId INT,
+    @PickUpLocationId INT,
+    @DropOffLocationId INT,
+    @ProcessedByUserId INT,
+    @StartDate DATETIME2,
+    @EndDate DATETIME2
+AS
+BEGIN
+    IF (SELECT Status FROM Vehicles WHERE Id = @VehicleId) != 'Available'
+    BEGIN
+        ;THROW 50001, 'Помилка: Цей автомобіль наразі недоступний для оренди.', 1;
+    END
+
+    DECLARE @BookedStatusId INT = (SELECT Id FROM RentalStatuses WHERE Name = 'Booked');
+
+    INSERT INTO Rentals (ClientId, VehicleId, PickUpLocationId, DropOffLocationId, ProcessedByUserId, StatusId, StartDate, EndDate)
+    VALUES (@ClientId, @VehicleId, @PickUpLocationId, @DropOffLocationId, @ProcessedByUserId, @BookedStatusId, @StartDate, @EndDate);
+    UPDATE Vehicles 
+    SET Status = 'InRent', UpdatedAt = GETDATE(), UpdatedBy = @ProcessedByUserId
+    WHERE Id = @VehicleId;
+END;
+GO
+
+3)Triggers
+
+-- 10. Автоматичне оновлення дати зміни для авто
+CREATE TRIGGER trg_Vehicles_UpdateAudit
+ON Vehicles
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE Vehicles
+    SET UpdatedAt = GETDATE()
+    WHERE Id IN (SELECT Id FROM inserted);
+END;
+GO
+
+-- 11. Автоматичне оновлення дати зміни для клієнтів
+CREATE TRIGGER trg_Clients_UpdateAudit
+ON Clients
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE Clients
+    SET UpdatedAt = GETDATE()
+    WHERE Id IN (SELECT Id FROM inserted);
+END;
+GO
+
+-- 12. Автоматичне оновлення дати зміни для договорів оренди
+CREATE TRIGGER trg_Rentals_UpdateAudit
+ON Rentals
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE Rentals
+    SET UpdatedAt = GETDATE()
+    WHERE Id IN (SELECT Id FROM inserted);
+END;
+GO
+
+4)Functions
+
+-- 13. Розрахунок базової вартості оренди (без урахування додаткових опцій)
+CREATE FUNCTION fn_CalculateBaseRentalCost (
+    @VehicleId INT,
+    @StartDate DATETIME2,
+    @EndDate DATETIME2
+)
+RETURNS DECIMAL(18,2)
+AS
+BEGIN
+    DECLARE @Days INT;
+    DECLARE @DailyRate DECIMAL(18,2);
+    DECLARE @TotalCost DECIMAL(18,2);
+
+    SET @Days = DATEDIFF(DAY, @StartDate, @EndDate);
+    IF @Days = 0 SET @Days = 1;
+
+    -- Отримуємо ставку авто через зв'язок з категорією
+    SELECT @DailyRate = vc.BaseDailyRate
+    FROM Vehicles v
+    JOIN VehicleModels vm ON v.ModelId = vm.Id
+    JOIN VehicleCategories vc ON vm.CategoryId = vc.Id
+    WHERE v.Id = @VehicleId;
+
+    SET @TotalCost = @Days * @DailyRate;
+
+    RETURN @TotalCost;
+END;
+GO
+
+
+
+-- 14. Розрахунок повної вартості оренди (База + Додаткові опції)
+CREATE FUNCTION fn_CalculateTotalRentalCost (
+    @RentalId INT
+)
+RETURNS DECIMAL(18,2)
+AS
+BEGIN
+    DECLARE @BaseCost DECIMAL(18,2);
+    DECLARE @OptionsCost DECIMAL(18,2);
+    DECLARE @TotalCost DECIMAL(18,2);
+    DECLARE @VehicleId INT, @StartDate DATETIME2, @EndDate DATETIME2, @Days INT;
+
+    SELECT @VehicleId = VehicleId, @StartDate = StartDate, @EndDate = EndDate 
+    FROM Rentals WHERE Id = @RentalId;
+
+    SET @BaseCost = dbo.fn_CalculateBaseRentalCost(@VehicleId, @StartDate, @EndDate);
+
+    SET @Days = DATEDIFF(DAY, @StartDate, @EndDate);
+    IF @Days = 0 SET @Days = 1;
+
+    SELECT @OptionsCost = ISNULL(SUM(ao.PricePerDay * @Days), 0)
+    FROM RentalOptions ro
+    JOIN AdditionalOptions ao ON ro.OptionId = ao.Id
+    WHERE ro.RentalId = @RentalId;
+
+    SET @TotalCost = @BaseCost + @OptionsCost;
+
+    RETURN @TotalCost;
+END;
+GO
+
+5)Створення індексів
+1. Некластерний індекс для зовнішнього ключа (Non-Clustered Index)
+CREATE NONCLUSTERED INDEX IX_Rentals_ClientId
+ON Rentals(ClientId);
+
+2. Фільтрований індекс (Filtered Index)
+CREATE NONCLUSTERED INDEX IX_Vehicles_Active_Status
+ON Vehicles(Status)
+WHERE IsDeleted = 0;
+
+
+3. Унікальний індекс із включеними стовпцями (Unique Covering Index)
+CREATE UNIQUE NONCLUSTERED INDEX UQ_Clients_Email
+ON Clients(Email)
+INCLUDE (FirstName, LastName, Phone)
+WHERE Email IS NOT NULL;
+
